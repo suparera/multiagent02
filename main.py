@@ -28,6 +28,13 @@ reviewer_prompt = load_prompt("reviewer")
 fixer_prompt = load_prompt("fixer")
 compile_fixer_prompt = load_prompt("compile_fixer")
 
+### Ensure outputs repo has a .gitignore before any files are written
+_outputs_gitignore = Path("outputs/.gitignore")
+if not _outputs_gitignore.exists():
+    _outputs_gitignore.write_text(
+        "target/\n*.class\n.quarkus/\n.idea/\n.eclipse/\n*.iml\n.DS_Store\n"
+    )
+
 task = """
 Design a minimal stock trading REST API.
 """
