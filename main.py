@@ -47,7 +47,48 @@ if not _outputs_gitignore.exists():
 
 # ── Task ─────────────────────────────────────────────────────────────────────
 task = """
-Design a minimal stock trading REST API.
+Build a Binance USDS-Margined Futures market data stream consumer in Quarkus 3.9 / Java 21.
+
+Requirements:
+1. WebSocket connection
+   - Connect to wss://fstream.binance.com/ws using bare Vert.x HttpClient.
+   - IMPORTANT: obtain the client via vertx.getDelegate().createHttpClient()
+     which returns io.vertx.core.http.HttpClient (NOT the Mutiny wrapper).
+     The Mutiny wrapper pauses the stream after the first frame and must NOT be used.
+   - Subscribe to streams: btcusdt@aggTrade and btcusdt@markPrice@1s
+   - Register ws.handler(buffer -> ...) BEFORE calling ws.writeTextMessage()
+
+2. ClickHouse storage (HTTP API)
+   - On startup, create these tables if they do not exist using
+     POST http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/?query=<DDL>
+   - Table: agg_trades
+       symbol String, price Float64, quantity Float64,
+       trade_time DateTime64(3), agg_trade_id UInt64
+     ENGINE = MergeTree() ORDER BY trade_time
+   - Table: mark_prices
+       symbol String, mark_price Float64, funding_rate Float64,
+       event_time DateTime64(3)
+     ENGINE = MergeTree() ORDER BY event_time
+   - On each incoming frame, insert one row via
+     POST http://{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/?query=INSERT+INTO+<table>+FORMAT+JSONEachRow
+   - Use java.net.http.HttpClient for the ClickHouse HTTP calls (not Vert.x)
+
+3. Configuration (application.properties, overridable by env var)
+   - clickhouse.host=clickhouse   (env: CLICKHOUSE_HOST)
+   - clickhouse.port=8123         (env: CLICKHOUSE_PORT)
+   - binance.streams=btcusdt@aggTrade,btcusdt@markPrice@1s
+
+4. Logging
+   - Print each insert to stdout: [INSERT] table=agg_trades symbol=BTCUSDT price=67432.10
+   - Print errors clearly with [ERROR] prefix
+
+5. docker-compose.yml (generate this file)
+   - Service: clickhouse using image clickhouse/clickhouse-server:24.3
+     ports 8123 and 9000, volume clickhouse_data, healthcheck via clickhouse-client SELECT 1
+   - Service: binance-stream using build: .
+     depends_on clickhouse (condition: service_healthy)
+     environment: CLICKHOUSE_HOST, CLICKHOUSE_PORT, BINANCE_STREAMS
+   - Named volume: clickhouse_data
 """
 
 # ════════════════════════════════════════════════════════════════════════════
