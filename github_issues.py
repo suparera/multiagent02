@@ -17,7 +17,15 @@ def _gh(*args) -> str:
 
 
 def get_repo() -> str:
-    return _gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+    # Read from the outputs/ repo remote so issues land on the output project, not the pipeline repo
+    result = subprocess.run(
+        ["git", "-C", "outputs", "remote", "get-url", "origin"],
+        capture_output=True, text=True, check=True,
+    )
+    remote_url = result.stdout.strip()
+    # Parse owner/repo from SSH (git@github.com:owner/repo.git) or HTTPS URLs
+    remote_url = remote_url.removeprefix("https://github.com/").removeprefix("git@github.com:")
+    return remote_url.removesuffix(".git")
 
 
 def ensure_labels(repo: str) -> None:
