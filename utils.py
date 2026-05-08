@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -26,6 +28,22 @@ def write_project_files(files: dict[str, str], output_dir: str = "outputs") -> N
         full_path = Path(output_dir) / path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
+
+
+def run_docker_build(output_dir: str = "outputs") -> tuple[bool, str]:
+    """Run mvn compile inside a Maven Docker container. Returns (success, error_output)."""
+    abs_output = str(Path(output_dir).resolve())
+    m2_cache = str(Path.home() / ".m2")
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{abs_output}:/project",
+        "-v", f"{m2_cache}:/root/.m2",
+        "maven:3.9-eclipse-temurin-21",
+        "mvn", "-f", "/project/pom.xml", "compile", "-q", "--no-transfer-progress",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    combined = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, combined
 
 
 def extract_code_blocks(text: str) -> str:

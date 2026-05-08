@@ -11,6 +11,7 @@ from utils import (
     extract_file_structure,
     format_file_structure,
     write_project_files,
+    run_docker_build,
     extract_json,
     timed,
 )
@@ -19,11 +20,13 @@ planner = ResilientClaudeAgent()
 coder = GLMAgent(temperature=0.3)
 reviewer = ResilientClaudeAgent()
 fixer = GLMAgent(temperature=0.1)
+compile_fixer = GLMAgent(temperature=0.1)
 
 architect_prompt = load_prompt("architect")
 coder_prompt = load_prompt("coder")
 reviewer_prompt = load_prompt("reviewer")
 fixer_prompt = load_prompt("fixer")
+compile_fixer_prompt = load_prompt("compile_fixer")
 
 task = """
 Design a minimal stock trading REST API.
@@ -118,6 +121,48 @@ Code:
         print(f"Closed issue #{issue_number}")
     else:
         print(f"Fixer returned no files for issue #{issue_number}, skipping close")
+
+### Compile-and-fix loop (Docker Maven build)
+MAX_COMPILE_ATTEMPTS = 3
+print("\n" + "=" * 60)
+print("COMPILE VALIDATION (Docker)")
+print("=" * 60)
+
+for attempt in range(1, MAX_COMPILE_ATTEMPTS + 1):
+    print(f"\nCompile attempt {attempt}/{MAX_COMPILE_ATTEMPTS}...")
+    success, build_output = timed(f"docker build #{attempt}", lambda: run_docker_build("outputs"))
+
+    if success:
+        print("Build PASSED")
+        break
+
+    print(f"Build FAILED:\n{build_output[:3000]}")
+
+    if attempt == MAX_COMPILE_ATTEMPTS:
+        print("Max compile attempts reached — moving on")
+        break
+
+    compile_text = format_file_structure(current_structure)
+    compile_fix_input = f"""
+{compile_fixer_prompt}
+
+Compile Error:
+{build_output[:3000]}
+
+Code:
+{compile_text}
+"""
+    fixed_raw = timed(
+        f"compile-fixer #{attempt}",
+        lambda fi=compile_fix_input: compile_fixer.run(fi),
+    )
+    fixed_files = extract_file_structure(fixed_raw)
+    if fixed_files:
+        current_structure = {**current_structure, **fixed_files}
+        write_project_files(fixed_files)
+        print(f"Compile-fixer updated {len(fixed_files)} file(s)")
+    else:
+        print("Compile-fixer returned no files")
 
 final_text = format_file_structure(current_structure)
 
