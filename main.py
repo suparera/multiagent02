@@ -7,7 +7,13 @@ from agents.ResilientClaudeAgent import ResilientClaudeAgent
 from delta import analyze_delta, print_delta
 from github_issues import close_issue, create_issue, ensure_labels, get_repo, sort_by_severity
 from prompt_loader import load_prompt
-from utils import extract_code_blocks, extract_json, timed
+from utils import (
+    extract_file_structure,
+    format_file_structure,
+    write_project_files,
+    extract_json,
+    timed,
+)
 
 planner = ResilientClaudeAgent()
 coder = GLMAgent(temperature=0.3)
@@ -46,25 +52,33 @@ Architecture:
 
 raw_code = timed("coder", lambda: coder.run(coder_input))
 
-code = extract_code_blocks(raw_code)
-print("CODE:")
-print(code)
+file_structure = extract_file_structure(raw_code)
+if not file_structure:
+    print("WARNING: coder returned no structured files — check raw_code.txt")
+
+write_project_files(file_structure)
+
+print("FILES GENERATED:")
+for path in file_structure:
+    print(f"  outputs/{path}")
+
+code_text = format_file_structure(file_structure)
+
 
 review_prompt = f"""
 {reviewer_prompt}
 
-
 Review ONLY this code:
 
-{code[:12000]}
+{code_text[:12000]}
 """
 
 raw_review = timed("reviewer", lambda: reviewer.run(review_prompt))
-
 review = extract_json(raw_review)
 
 print("REVIEW:")
 print(review)
+
 
 ### Post findings as GitHub issues
 repo = get_repo()
@@ -77,11 +91,13 @@ for finding in sorted_review:
     issue_numbers.append((number, finding))
     print(f"Created issue #{number}: [{finding['severity']}] {finding['type']}")
 
+
 ### Fix issue by issue, HIGH -> MEDIUM -> LOW
-current_code = code
+current_structure = file_structure
 for issue_number, finding in issue_numbers:
     print(f"\nFixing issue #{issue_number}: [{finding['severity']}] {finding['type']}")
 
+    current_text = format_file_structure(current_structure)
     fix_input = f"""
 {fixer_prompt}
 
@@ -89,20 +105,22 @@ Finding to Fix:
 {json.dumps(finding, indent=2)}
 
 Code:
-{current_code}
+{current_text}
 """
 
     fixed_raw = timed(f"fixer #{issue_number}", lambda fi=fix_input: fixer.run(fi))
-    fixed = extract_code_blocks(fixed_raw)
+    fixed_files = extract_file_structure(fixed_raw)
 
-    if fixed.strip():
-        current_code = fixed
+    if fixed_files:
+        current_structure = {**current_structure, **fixed_files}
+        write_project_files(fixed_files)
         close_issue(repo, issue_number)
         print(f"Closed issue #{issue_number}")
     else:
-        print(f"Fixer returned no code for issue #{issue_number}, skipping close")
+        print(f"Fixer returned no files for issue #{issue_number}, skipping close")
 
-fixed_code = current_code
+final_text = format_file_structure(current_structure)
+
 
 ### Re-reviewer
 re_review_prompt = f"""
@@ -110,14 +128,12 @@ re_review_prompt = f"""
 
 Review ONLY this code:
 
-{fixed_code[:6000]}
+{final_text[:6000]}
 """
 re_review_raw = timed("re-reviewer", lambda: reviewer.run(re_review_prompt))
 if "timeout" in re_review_raw.lower():
     print("Reviewer timed out")
-
     re_review = []
-
 else:
     print(f"""RE-REVIEW RAW:\n {re_review_raw}\nEND-RE-REVIEW""")
     re_review = extract_json(re_review_raw)
@@ -136,13 +152,10 @@ delta_output = {
 
 Path("outputs/plan.txt").write_text(plan)
 Path("outputs/raw_code.txt").write_text(raw_code)
-Path("outputs/code.txt").write_text(code)
 Path("outputs/reviewer.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
-Path("outputs/fixed_code.txt").write_text(fixed_code)
-Path("outputs/re_review.json").write_text(
-    json.dumps(re_review, indent=2), encoding="utf-8"
-)
+Path("outputs/re_review.json").write_text(json.dumps(re_review, indent=2), encoding="utf-8")
 Path("outputs/delta.json").write_text(json.dumps(delta_output, indent=2), encoding="utf-8")
+
 
 ### Commit outputs to the outputs repo
 def _git_outputs(*args):

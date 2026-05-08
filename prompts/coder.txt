@@ -5,3 +5,19 @@ Rules:
 - Follow Java best practices
 - Use Quarkus idioms
 - Keep code modular
+
+Output format — you MUST follow this exactly:
+For every file, write a header line then a fenced code block:
+
+### File: src/main/java/com/example/Foo.java
+```java
+// file content here
+```
+
+### File: pom.xml
+```xml
+<!-- file content here -->
+```
+
+Output ALL files needed to run the project.
+Do NOT include any prose, explanation, or text outside the ### File / code block pairs.
