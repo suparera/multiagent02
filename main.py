@@ -4,6 +4,7 @@ from pathlib import Path
 from agents.glm_agent import GLMAgent
 from agents.ResilientClaudeAgent import ResilientClaudeAgent
 from delta import analyze_delta, print_delta
+from github_issues import close_issue, create_issue, ensure_labels, get_repo, sort_by_severity
 from prompt_loader import load_prompt
 from utils import extract_code_blocks, extract_json, timed
 
@@ -64,19 +65,43 @@ review = extract_json(raw_review)
 print("REVIEW:")
 print(review)
 
-### Fixer part
-fix_input = f"""
+### Post findings as GitHub issues
+repo = get_repo()
+ensure_labels(repo)
+
+sorted_review = sort_by_severity(review)
+issue_numbers = []
+for finding in sorted_review:
+    number = create_issue(repo, finding)
+    issue_numbers.append((number, finding))
+    print(f"Created issue #{number}: [{finding['severity']}] {finding['type']}")
+
+### Fix issue by issue, HIGH -> MEDIUM -> LOW
+current_code = code
+for issue_number, finding in issue_numbers:
+    print(f"\nFixing issue #{issue_number}: [{finding['severity']}] {finding['type']}")
+
+    fix_input = f"""
 {fixer_prompt}
 
-Reviewer Findings:
-{json.dumps(review, indent=2)}
+Finding to Fix:
+{json.dumps(finding, indent=2)}
 
 Code:
-{code}
+{current_code}
 """
 
-fixed_raw = timed("fixer", lambda: fixer.run(fix_input))
-fixed_code = extract_code_blocks(fixed_raw)
+    fixed_raw = timed(f"fixer #{issue_number}", lambda fi=fix_input: fixer.run(fi))
+    fixed = extract_code_blocks(fixed_raw)
+
+    if fixed.strip():
+        current_code = fixed
+        close_issue(repo, issue_number)
+        print(f"Closed issue #{issue_number}")
+    else:
+        print(f"Fixer returned no code for issue #{issue_number}, skipping close")
+
+fixed_code = current_code
 
 ### Re-reviewer
 re_review_prompt = f"""
