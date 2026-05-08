@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from agents.glm_agent import GLMAgent
@@ -142,3 +143,11 @@ Path("outputs/re_review.json").write_text(
     json.dumps(re_review, indent=2), encoding="utf-8"
 )
 Path("outputs/delta.json").write_text(json.dumps(delta_output, indent=2), encoding="utf-8")
+
+### Commit outputs to the outputs repo
+def _git_outputs(*args):
+    subprocess.run(["git", "-C", "outputs", *args], check=True)
+
+_git_outputs("add", "-A")
+_git_outputs("commit", "--allow-empty", "-m", f"pipeline run: {task.strip()[:72]}")
+print("Committed pipeline outputs to outputs/ repo.")
