@@ -2,6 +2,9 @@ import json
 import subprocess
 from pathlib import Path
 
+from agents.debugger_agent import DebuggerAgent
+from agents.doc_research_agent import DocResearchAgent
+from agents.docker_run_agent import DockerRunAgent
 from agents.glm_agent import GLMAgent
 from agents.ResilientClaudeAgent import ResilientClaudeAgent
 from delta import analyze_delta, print_delta
@@ -16,30 +19,40 @@ from utils import (
     timed,
 )
 
-planner = ResilientClaudeAgent()
-coder = GLMAgent(temperature=0.3)
-reviewer = ResilientClaudeAgent()
-fixer = GLMAgent(temperature=0.1)
+# ── Agents ──────────────────────────────────────────────────────────────────
+planner       = ResilientClaudeAgent()
+coder         = GLMAgent(temperature=0.3)
+reviewer      = ResilientClaudeAgent()
+fixer         = GLMAgent(temperature=0.1)
 compile_fixer = GLMAgent(temperature=0.1)
+debugger      = DebuggerAgent()
+doc_research  = DocResearchAgent()
+docker_runner = DockerRunAgent(output_dir="outputs", timeout=30)
 
-architect_prompt = load_prompt("architect")
-coder_prompt = load_prompt("coder")
-reviewer_prompt = load_prompt("reviewer")
-fixer_prompt = load_prompt("fixer")
+# ── Prompts ──────────────────────────────────────────────────────────────────
+architect_prompt     = load_prompt("architect")
+coder_prompt         = load_prompt("coder")
+reviewer_prompt      = load_prompt("reviewer")
+fixer_prompt         = load_prompt("fixer")
 compile_fixer_prompt = load_prompt("compile_fixer")
+debugger_prompt      = load_prompt("debugger")
+doc_research_prompt  = load_prompt("doc_research")
 
-### Ensure outputs repo has a .gitignore before any files are written
+# ── Ensure outputs repo has a .gitignore ─────────────────────────────────────
 _outputs_gitignore = Path("outputs/.gitignore")
 if not _outputs_gitignore.exists():
     _outputs_gitignore.write_text(
         "target/\n*.class\n.quarkus/\n.idea/\n.eclipse/\n*.iml\n.DS_Store\n"
     )
 
+# ── Task ─────────────────────────────────────────────────────────────────────
 task = """
 Design a minimal stock trading REST API.
 """
 
-
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 1 — PLAN
+# ════════════════════════════════════════════════════════════════════════════
 planner_input = f"""
 {architect_prompt}
 
@@ -48,11 +61,11 @@ User Task:
 """
 
 plan = timed("planner", lambda: planner.run(planner_input))
+print("PLAN:\n" + plan)
 
-print("PLAN:")
-print(plan)
-
-
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 2 — CODE
+# ════════════════════════════════════════════════════════════════════════════
 coder_input = f"""
 {coder_prompt}
 
@@ -67,14 +80,15 @@ if not file_structure:
     print("WARNING: coder returned no structured files — check raw_code.txt")
 
 write_project_files(file_structure)
-
 print("FILES GENERATED:")
 for path in file_structure:
     print(f"  outputs/{path}")
 
 code_text = format_file_structure(file_structure)
 
-
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 3 — REVIEW → GITHUB ISSUES
+# ════════════════════════════════════════════════════════════════════════════
 review_prompt = f"""
 {reviewer_prompt}
 
@@ -85,12 +99,8 @@ Review ONLY this code:
 
 raw_review = timed("reviewer", lambda: reviewer.run(review_prompt))
 review = extract_json(raw_review)
+print("REVIEW:\n" + json.dumps(review, indent=2))
 
-print("REVIEW:")
-print(review)
-
-
-### Post findings as GitHub issues
 repo = get_repo()
 ensure_labels(repo)
 
@@ -101,13 +111,13 @@ for finding in sorted_review:
     issue_numbers.append((number, finding))
     print(f"Created issue #{number}: [{finding['severity']}] {finding['type']}")
 
-
-### Fix issue by issue, HIGH -> MEDIUM -> LOW
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 4 — FIX (issue by issue, HIGH → MEDIUM → LOW)
+# ════════════════════════════════════════════════════════════════════════════
 current_structure = file_structure
 for issue_number, finding in issue_numbers:
     print(f"\nFixing issue #{issue_number}: [{finding['severity']}] {finding['type']}")
 
-    current_text = format_file_structure(current_structure)
     fix_input = f"""
 {fixer_prompt}
 
@@ -115,7 +125,7 @@ Finding to Fix:
 {json.dumps(finding, indent=2)}
 
 Code:
-{current_text}
+{format_file_structure(current_structure)}
 """
 
     fixed_raw = timed(f"fixer #{issue_number}", lambda fi=fix_input: fixer.run(fi))
@@ -129,27 +139,27 @@ Code:
     else:
         print(f"Fixer returned no files for issue #{issue_number}, skipping close")
 
-### Compile-and-fix loop (Docker Maven build)
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 5 — COMPILE VALIDATION (Docker Maven)
+# ════════════════════════════════════════════════════════════════════════════
 MAX_COMPILE_ATTEMPTS = 3
 print("\n" + "=" * 60)
-print("COMPILE VALIDATION (Docker)")
+print("COMPILE VALIDATION (Docker Maven)")
 print("=" * 60)
 
 for attempt in range(1, MAX_COMPILE_ATTEMPTS + 1):
     print(f"\nCompile attempt {attempt}/{MAX_COMPILE_ATTEMPTS}...")
-    success, build_output = timed(f"docker build #{attempt}", lambda: run_docker_build("outputs"))
+    success, build_output = timed(f"compile #{attempt}", lambda: run_docker_build("outputs"))
 
     if success:
-        print("Build PASSED")
+        print("Compile PASSED")
         break
 
-    print(f"Build FAILED:\n{build_output[:3000]}")
-
+    print(f"Compile FAILED:\n{build_output[:3000]}")
     if attempt == MAX_COMPILE_ATTEMPTS:
         print("Max compile attempts reached — moving on")
         break
 
-    compile_text = format_file_structure(current_structure)
     compile_fix_input = f"""
 {compile_fixer_prompt}
 
@@ -157,7 +167,7 @@ Compile Error:
 {build_output[:3000]}
 
 Code:
-{compile_text}
+{format_file_structure(current_structure)}
 """
     fixed_raw = timed(
         f"compile-fixer #{attempt}",
@@ -171,10 +181,92 @@ Code:
     else:
         print("Compile-fixer returned no files")
 
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 6 — RUNTIME VALIDATION (docker compose + DebuggerAgent)
+# ════════════════════════════════════════════════════════════════════════════
+MAX_RUNTIME_ATTEMPTS = 3
+print("\n" + "=" * 60)
+print("RUNTIME VALIDATION (docker compose)")
+print("=" * 60)
+
+for attempt in range(1, MAX_RUNTIME_ATTEMPTS + 1):
+    print(f"\nRuntime attempt {attempt}/{MAX_RUNTIME_ATTEMPTS} — observing for {docker_runner.timeout}s...")
+
+    runtime_output = timed(f"docker-run #{attempt}", lambda: docker_runner.run())
+
+    debug_input = f"""
+{debugger_prompt}
+
+Runtime Output:
+{runtime_output}
+
+Code:
+{format_file_structure(current_structure)[:10000]}
+"""
+
+    debug_raw = timed(f"debugger #{attempt}", lambda di=debug_input: debugger.run(di))
+    print(f"Debugger says:\n{debug_raw[:400]}")
+
+    # ── Success ──────────────────────────────────────────────────────────────
+    if debug_raw.strip().upper() == "LGTM":
+        print("Runtime validated by DebuggerAgent")
+        break
+
+    # ── Research needed ───────────────────────────────────────────────────────
+    if debug_raw.startswith("RESEARCH:"):
+        question = debug_raw.splitlines()[0].replace("RESEARCH:", "").strip()
+        print(f"DocResearchAgent called: {question}")
+
+        research_input = f"""
+{doc_research_prompt}
+
+Question:
+{question}
+"""
+        doc_answer = timed("doc-research", lambda ri=research_input: doc_research.run(ri))
+        print(f"DocResearch answer:\n{doc_answer[:400]}")
+
+        # Re-run debugger with doc context included
+        debug_input_with_docs = f"""
+{debugger_prompt}
+
+Library Documentation Context:
+{doc_answer}
+
+Runtime Output:
+{runtime_output}
+
+Code:
+{format_file_structure(current_structure)[:10000]}
+"""
+        debug_raw = timed(
+            f"debugger-with-docs #{attempt}",
+            lambda di=debug_input_with_docs: debugger.run(di),
+        )
+        print(f"Debugger (with docs) says:\n{debug_raw[:400]}")
+
+        if debug_raw.strip().upper() == "LGTM":
+            print("Runtime validated by DebuggerAgent (after research)")
+            break
+
+    # ── Apply fixes ───────────────────────────────────────────────────────────
+    fixed_files = extract_file_structure(debug_raw)
+    if not fixed_files:
+        print("DebuggerAgent returned no file fixes — stopping runtime loop")
+        break
+
+    current_structure = {**current_structure, **fixed_files}
+    write_project_files(fixed_files)
+    print(f"Applied debugger fixes to {len(fixed_files)} file(s)")
+
+    if attempt == MAX_RUNTIME_ATTEMPTS:
+        print("Max runtime attempts reached")
+
+# ════════════════════════════════════════════════════════════════════════════
+# STAGE 7 — RE-REVIEW + DELTA
+# ════════════════════════════════════════════════════════════════════════════
 final_text = format_file_structure(current_structure)
 
-
-### Re-reviewer
 re_review_prompt = f"""
 {reviewer_prompt}
 
@@ -184,14 +276,11 @@ Review ONLY this code:
 """
 re_review_raw = timed("re-reviewer", lambda: reviewer.run(re_review_prompt))
 if "timeout" in re_review_raw.lower():
-    print("Reviewer timed out")
+    print("Re-reviewer timed out")
     re_review = []
 else:
-    print(f"""RE-REVIEW RAW:\n {re_review_raw}\nEND-RE-REVIEW""")
     re_review = extract_json(re_review_raw)
-    print("RE-REVIEW:")
-    print(re_review)
-
+    print("RE-REVIEW:\n" + json.dumps(re_review, indent=2))
 
 delta = analyze_delta(review, re_review)
 print_delta(delta)
@@ -202,6 +291,9 @@ delta_output = {
     "new": delta.new,
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# SAVE + COMMIT
+# ════════════════════════════════════════════════════════════════════════════
 Path("outputs/plan.txt").write_text(plan)
 Path("outputs/raw_code.txt").write_text(raw_code)
 Path("outputs/reviewer.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
@@ -209,7 +301,6 @@ Path("outputs/re_review.json").write_text(json.dumps(re_review, indent=2), encod
 Path("outputs/delta.json").write_text(json.dumps(delta_output, indent=2), encoding="utf-8")
 
 
-### Commit outputs to the outputs repo
 def _git_outputs(*args):
     subprocess.run(["git", "-C", "outputs", *args], check=True)
 
