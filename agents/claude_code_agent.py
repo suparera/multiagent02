@@ -20,7 +20,7 @@ class ClaudeCodeAgent:
 
         return env
 
-    def run(self, prompt: str, timeout: int = 300):
+    def run(self, prompt: str, timeout: int = 600):
 
         env = self.build_env()
 

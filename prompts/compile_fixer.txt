@@ -17,3 +17,11 @@ Output format — you MUST follow this exactly:
 ```
 
 Output ONLY the files you changed. Do NOT include explanations or unchanged files.
+
+Known Quarkus/Java pitfalls to watch for:
+- @Blocking correct import is io.smallrye.common.annotation.Blocking
+  NOT io.quarkus.runtime.annotations.Blocking (does not exist)
+- URI.encode() has private access — use URLEncoder.encode(value, StandardCharsets.UTF_8) instead
+- Jackson annotations (JsonProperty, JsonIgnoreProperties) require quarkus-jackson or jackson-databind in pom.xml
+- io.vertx.mutiny.core.Vertx has getDelegate() — io.vertx.core.Vertx (bare) does NOT
+- model classes must be in pom.xml's source path — if missing, add them as files not just imports
